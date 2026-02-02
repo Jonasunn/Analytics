@@ -68,6 +68,27 @@ db.exec(`
 `);
 
 function isoNow(){ return new Date().toISOString(); }
+
+// DEDUP: avoid double-counting banner_view on some ad/CDN environments.
+// If the same (event_name, session_id) or (event_name, anonymous_user_id) arrives within DEDUP_WINDOW_MS, ignore it.
+const DEDUP_WINDOW_MS = 30_000;
+function shouldDropDuplicateView({ event_name, session_id, anonymous_user_id, client_ts }) {
+  if (event_name !== "banner_view") return false;
+  const now = Date.now();
+  const ts = client_ts ? Date.parse(client_ts) : now;
+  const sinceIso = new Date((isNaN(ts)? now: ts) - DEDUP_WINDOW_MS).toISOString();
+  try {
+    if (session_id) {
+      const r = db.prepare(`select 1 as one from events where event_name=? and session_id=? and client_ts>=? limit 1`).get(event_name, session_id, sinceIso);
+      if (r) return true;
+    } else if (anonymous_user_id) {
+      const r = db.prepare(`select 1 as one from events where event_name=? and anonymous_user_id=? and client_ts>=? limit 1`).get(event_name, anonymous_user_id, sinceIso);
+      if (r) return true;
+    }
+  } catch {}
+  return false;
+}
+
 function sanitizeShort(s, max=80){ if (s === null || s === undefined) return null; return String(s).slice(0, max); }
 
 // 1x1 transparent gif for pixel tracking (base64)
@@ -93,6 +114,7 @@ app.post("/api/events", (req,res) => {
   const tx = db.transaction((batch) => {
     for (const e of batch) {
       if (!e || !e.event_name) continue;
+      if (shouldDropDuplicateView({ event_name: String(e.event_name), session_id: e.session_id || null, anonymous_user_id: e.anonymous_user_id || null, client_ts: e.client_ts || null })) continue;
       stmt.run(
         received,
         e.client_ts || null,
@@ -117,6 +139,12 @@ app.get("/api/pixel.gif", (req, res) => {
   const session_id = sanitizeShort(req.query.session_id || null, 120);
   const anonymous_user_id = sanitizeShort(req.query.anon || req.query.anonymous_user_id || null, 120);
   const client_ts = sanitizeShort(req.query.ts || new Date().toISOString(), 60);
+
+  if (shouldDropDuplicateView({ event_name, session_id, anonymous_user_id, client_ts })) {
+    res.set("Content-Type", "image/gif");
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    return res.status(200).send(PIXEL_GIF);
+  }
 
   const props = {
     url: sanitizeShort(req.query.url || req.get("referer") || null, 500),
