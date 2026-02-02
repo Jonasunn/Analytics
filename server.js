@@ -233,8 +233,8 @@ app.get("/api/stats", (req,res) => {
     if (!byDay.has(k)) byDay.set(k, { date: k, starts: 0, wins: 0, regs: 0, views: 0 });
     const o = byDay.get(k);
 
-    if (r.event_name === "game_start") { o.starts++; totals.starts++; }
-    if (r.event_name === "win") { o.wins++; totals.wins++; }
+    if (r.event_name === "game_start" || r.event_name === "card_draw") { o.starts++; totals.starts++; }
+    if (r.event_name === "win" || r.event_name === "popout_click") { o.wins++; totals.wins++; }
     if (r.event_name === "banner_view" || r.event_name === "page_view") { o.views++; totals.views++; }
   }
   for (const r of regs) {
