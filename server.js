@@ -95,6 +95,7 @@ function sanitizeShort(s, max=80){ if (s === null || s === undefined) return nul
 const PIXEL_GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 
 app.get("/healthz", (_req,res)=>res.json({ok:true}));
+app.get("/api/version", (_req,res)=>res.json({ version: "views-dedupe-10s-v1" }));
 
 app.post("/api/sessions/start", (_req,res) => {
   const sid = Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -233,7 +234,7 @@ app.get("/api/stats", (req,res) => {
   const game = String(req.query.game_id || "").trim();
 
   let ev = db.prepare(`
-    select event_name, client_ts, campaign_id, game_id
+    select event_name, client_ts, campaign_id, game_id, props
     from events
     where client_ts is not null and client_ts >= ?
   `).all(since);
@@ -256,6 +257,8 @@ app.get("/api/stats", (req,res) => {
   const byDay = new Map();
   const totals = { starts: 0, wins: 0, regs: 0, views: 0 };
 
+  const viewSeen = new Set();
+
   for (const r of ev) {
     const k = dayKey(r.client_ts);
     if (!byDay.has(k)) byDay.set(k, { date: k, starts: 0, wins: 0, regs: 0, views: 0 });
@@ -263,7 +266,18 @@ app.get("/api/stats", (req,res) => {
 
     if (r.event_name === "game_start" || r.event_name === "card_draw") { o.starts++; totals.starts++; }
     if (r.event_name === "win" || r.event_name === "popout_click") { o.wins++; totals.wins++; }
-    if (r.event_name === "banner_view" || r.event_name === "page_view") { o.views++; totals.views++; }
+    if (r.event_name === "banner_view" || r.event_name === "page_view") {
+      // Dedupe views that fire twice for a single impression (common in ad/CDN iframes)
+      let url = "";
+      try { url = JSON.parse(r.props || "{}")?.url || ""; } catch {}
+      const t = Date.parse(r.client_ts || "") || Date.now();
+      const bucket = Math.floor(t / 10000); // 10-second bucket
+      const key = `${k}|${r.campaign_id || ""}|${r.game_id || ""}|${url}|${bucket}`;
+      if (!viewSeen.has(key)) {
+        viewSeen.add(key);
+        o.views++; totals.views++;
+      }
+    }
   }
   for (const r of regs) {
     const k = dayKey(r.created_at);
