@@ -1,30 +1,23 @@
-# Render Analytics Service (API + Dashboard)
+# Render Analytics Service (with pixel fallback)
 
-Deploy this as a **Render Web Service**. It provides:
-- `/api/sessions/start`
-- `/api/events`
-- `/api/stats`
-- `/api/registrations`
-- dashboard UI at `/admin.html`
+Deploy as Render **Web Service**.
 
 ## Render settings
-- Build command: `npm install`
-- Start command: `npm start`
+- Build: `npm install`
+- Start: `npm start`
 
-## Persistence (important)
-Attach a **Persistent Disk** and set:
-- Mount path: `/var/data`
-- Env var: `DB_PATH=/var/data/data.sqlite`
+## Persistence (recommended)
+Add Persistent Disk mount `/var/data` and set env var:
+- DB_PATH=/var/data/data.sqlite
 
-If you skip this, data can be lost on redeploy/restart.
+## CORS
+Set env var ALLOWED_ORIGINS to the banner/game origins, e.g.:
+- https://pulsmediacdn.com,https://pulsmedia.is
 
-## CORS (important)
-Set env var `ALLOWED_ORIGINS` (comma-separated):
-Example:
-`https://vefbordi.is,https://your-banner-host.com`
+If unset, allows all origins.
 
-If you leave it unset, it allows all (`*`).
+## Pixel fallback
+If fetch() is blocked by CSP/CORS, you can send events via an image request:
+- /api/pixel.gif?event=banner_view&campaign_id=...&game_id=...
 
-## Dashboard
-- https://<your-service>.onrender.com/admin.html
-- https://<your-service>.onrender.com/registrations.html
+This is implemented in the updated banner package I provided.

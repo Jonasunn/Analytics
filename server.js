@@ -14,12 +14,12 @@ app.use(morgan("dev"));
 
 // ---- CORS ----
 // Set ALLOWED_ORIGINS to a comma-separated list of origins you want to allow,
-// e.g. "https://https://pulsmedia.is"
-const allowed = (process.env.ALLOWED_ORIGINS || "https://https://pulsmedia.is").split(",").map(s => s.trim()).filter(Boolean);
+// e.g. "https://pulsmediacdn.com,https://pulsmedia.is,https://vefbordi.is"
+const allowed = (process.env.ALLOWED_ORIGINS || "*").split(",").map(s => s.trim()).filter(Boolean);
 
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // server-to-server / curl
+    if (!origin) return cb(null, true);
     if (allowed.includes("*")) return cb(null, true);
     if (allowed.includes(origin)) return cb(null, true);
     return cb(new Error("CORS blocked for origin: " + origin));
@@ -68,24 +68,27 @@ db.exec(`
 `);
 
 function isoNow(){ return new Date().toISOString(); }
+function sanitizeShort(s, max=80){ if (s === null || s === undefined) return null; return String(s).slice(0, max); }
+
+// 1x1 transparent gif for pixel tracking (base64)
+const PIXEL_GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
 
 app.get("/healthz", (_req,res)=>res.json({ok:true}));
 
-// Minimal session id generator
-app.post("/api/sessions/start", (req,res) => {
+app.post("/api/sessions/start", (_req,res) => {
   const sid = Math.random().toString(16).slice(2) + Date.now().toString(16);
   res.json({ session_id: sid });
 });
 
 app.post("/api/events", (req,res) => {
   const events = req.body?.events;
-  if (!Array.isArray(events) || events.length > 500) {
-    return res.status(400).json({ error: "Invalid events batch" });
-  }
+  if (!Array.isArray(events) || events.length > 500) return res.status(400).json({ error: "Invalid events batch" });
+
   const stmt = db.prepare(`
     insert into events (received_at, client_ts, campaign_id, game_id, session_id, anonymous_user_id, event_name, props)
     values (?, ?, ?, ?, ?, ?, ?, ?)
   `);
+
   const received = isoNow();
   const tx = db.transaction((batch) => {
     for (const e of batch) {
@@ -104,6 +107,42 @@ app.post("/api/events", (req,res) => {
   });
   tx(events);
   res.json({ ok: true, ingested: events.length });
+});
+
+// Pixel endpoint (fallback when fetch is blocked by CSP/CORS)
+app.get("/api/pixel.gif", (req, res) => {
+  const event_name = sanitizeShort(req.query.event || req.query.event_name || "pixel");
+  const campaign_id = sanitizeShort(req.query.campaign_id || null, 120);
+  const game_id = sanitizeShort(req.query.game_id || null, 120);
+  const session_id = sanitizeShort(req.query.session_id || null, 120);
+  const anonymous_user_id = sanitizeShort(req.query.anon || req.query.anonymous_user_id || null, 120);
+  const client_ts = sanitizeShort(req.query.ts || new Date().toISOString(), 60);
+
+  const props = {
+    url: sanitizeShort(req.query.url || req.get("referer") || null, 500),
+    referrer: sanitizeShort(req.query.ref || null, 500),
+    extra: req.query.extra ? sanitizeShort(req.query.extra, 900) : null
+  };
+
+  try {
+    db.prepare(`
+      insert into events (received_at, client_ts, campaign_id, game_id, session_id, anonymous_user_id, event_name, props)
+      values (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      isoNow(),
+      client_ts,
+      campaign_id,
+      game_id,
+      session_id,
+      anonymous_user_id,
+      event_name,
+      JSON.stringify(props)
+    );
+  } catch {}
+
+  res.set("Content-Type", "image/gif");
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.status(200).send(PIXEL_GIF);
 });
 
 app.post("/api/registrations", (req,res) => {
@@ -234,9 +273,8 @@ app.get("/api/meta", (_req,res) => {
   res.json({ campaigns, games });
 });
 
-// Serve dashboard UI
-const publicDir = path.join(__dirname, "public");
-app.use(express.static(publicDir));
+// Dashboard UI
+app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (_req,res)=>res.redirect("/admin.html"));
 
 const PORT = process.env.PORT || 3000;
